@@ -1,0 +1,10 @@
+requests
+requests_html
+aiohttp
+beautifulsoup4
+lxml
+tqdm
+python-dotenv
+bilibili-api-python
+ffmpeg-python
+Pillow
