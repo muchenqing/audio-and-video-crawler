@@ -6,6 +6,8 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import DOWNLOAD_DIR
+from api.image_api import ImageAPI
+from PIL import Image, ImageTk
 
 class ModernDownloaderGUI:
     def __init__(self, root):
@@ -23,6 +25,7 @@ class ModernDownloaderGUI:
         
         # 创建服务实例
         self.service = VideoService()
+        self.image_api = ImageAPI()
         
         # 创建主框架
         self.main_frame = ttk.Frame(self.root, padding="20")
@@ -30,6 +33,9 @@ class ModernDownloaderGUI:
         
         # 创建界面元素
         self.create_widgets()
+        
+        # 初始化图片相关变量
+        self.current_image = None
     
     def create_widgets(self):
         # 标题
@@ -79,6 +85,15 @@ class ModernDownloaderGUI:
             command=self.update_ui
         )
         netease_music_radio.pack(side=tk.LEFT, padx=10)
+        
+        image_radio = ttk.Radiobutton(
+            platform_inner_frame, 
+            text="图片查看", 
+            value="image", 
+            variable=self.platform, 
+            command=self.update_ui
+        )
+        image_radio.pack(side=tk.LEFT, padx=10)
         
         # 下载类型选择（仅B站）
         self.type_frame = ttk.LabelFrame(self.main_frame, text="下载类型", padding="15")
@@ -337,42 +352,61 @@ class ModernDownloaderGUI:
         self.search_frame.pack_forget()
         self.result_frame.pack_forget()
         
-        # 显示输入框架
-        self.input_frame.pack(fill=tk.X, pady=(0, 20))
+        # 隐藏图片查看框架
+        if hasattr(self, 'image_frame'):
+            self.image_frame.pack_forget()
         
         if platform == "bilibili":
             # 显示B站相关界面
+            self.input_frame.pack(fill=tk.X, pady=(0, 20))
             self.type_frame.pack(fill=tk.X, pady=(0, 20))
             self.id_label.config(text="BV号:")
-        else:
+        elif platform == "qq_music" or platform == "netease_music":
             # 显示音乐平台相关界面
+            self.input_frame.pack(fill=tk.X, pady=(0, 20))
             self.search_frame.pack(fill=tk.X, pady=(0, 20))
             self.result_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
             self.id_label.config(text="歌曲ID:")
+        elif platform == "image":
+            # 显示图片查看界面
+            self.create_image_viewer()
+            self.download_button.config(text="获取10张随机图片")
     
     def start_download(self):
         platform = self.platform.get()
-        item_id = self.id_entry.get().strip()
-        
-        if not item_id:
-            if platform == "bilibili":
-                messagebox.showerror("错误", "请输入BV号")
-            else:
-                messagebox.showerror("错误", "请输入歌曲ID")
-            return
         
         # 禁用按钮，避免重复点击
-        self.status_var.set("正在下载...")
+        self.status_var.set("正在获取...")
         self.download_button.config(state=tk.DISABLED)
         
-        # 在新线程中执行下载，避免阻塞UI
+        # 在新线程中执行操作，避免阻塞UI
         if platform == "bilibili":
+            item_id = self.id_entry.get().strip()
+            if not item_id:
+                messagebox.showerror("错误", "请输入BV号")
+                self.download_button.config(state=tk.NORMAL)
+                self.status_var.set("就绪")
+                return
             download_type = self.download_type.get()
             thread = threading.Thread(target=self.download_content, args=(item_id, download_type))
         elif platform == "qq_music":
+            item_id = self.id_entry.get().strip()
+            if not item_id:
+                messagebox.showerror("错误", "请输入歌曲ID")
+                self.download_button.config(state=tk.NORMAL)
+                self.status_var.set("就绪")
+                return
             thread = threading.Thread(target=self.download_qq_music, args=(item_id,))
         elif platform == "netease_music":
+            item_id = self.id_entry.get().strip()
+            if not item_id:
+                messagebox.showerror("错误", "请输入歌曲ID")
+                self.download_button.config(state=tk.NORMAL)
+                self.status_var.set("就绪")
+                return
             thread = threading.Thread(target=self.download_netease_music, args=(item_id,))
+        elif platform == "image":
+            thread = threading.Thread(target=self.get_random_image)
         
         thread.daemon = True
         thread.start()
@@ -504,6 +538,162 @@ class ModernDownloaderGUI:
         # 显示提示
         self.status_var.set(f"已选择歌曲: {song_name}")
     
+    def get_random_image(self):
+        """获取10张随机图片并显示"""
+        try:
+            self.status_var.set("正在获取10张随机图片...")
+            
+            # 清空之前的图片
+            for widget in self.canvas_frame.winfo_children():
+                widget.destroy()
+            
+            # 并行获取10张随机图片
+            import concurrent.futures
+            image_data_list = []
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                # 提交10个任务
+                futures = [executor.submit(self.image_api.get_random_image) for _ in range(10)]
+                # 收集结果
+                for future in concurrent.futures.as_completed(futures):
+                    image_data = future.result()
+                    if image_data:
+                        image_data_list.append(image_data)
+            
+            if image_data_list:
+                self.image_data_list = image_data_list  # 保存图片数据列表
+                
+                # 显示图片，保持比例不变
+                from io import BytesIO
+                for i, image_data in enumerate(image_data_list):
+                    # 加载图片
+                    image = Image.open(BytesIO(image_data))
+                    
+                    # 计算缩放后的尺寸（保持比例）
+                    max_width = 800
+                    if image.width > max_width:
+                        ratio = max_width / image.width
+                        new_width = max_width
+                        new_height = int(image.height * ratio)
+                        image = image.resize((new_width, new_height), Image.LANCZOS)
+                    
+                    # 显示图片
+                    photo = ImageTk.PhotoImage(image)
+                    image_label = ttk.Label(self.canvas_frame, image=photo)
+                    image_label.image = photo  # 保持引用
+                    image_label.pack(pady=10)
+                    
+                    # 添加下载按钮
+                    download_btn = ttk.Button(
+                        self.canvas_frame, 
+                        text=f"下载图片 {i+1}", 
+                        command=lambda data=image_data, index=i: self.download_image(data, index),
+                        style="Primary.TButton",
+                        width=12
+                    )
+                    download_btn.pack(pady=5)
+                
+                # 更新画布滚动区域
+                self.canvas_frame.update_idletasks()
+                self.canvas.config(scrollregion=self.canvas.bbox("all"))
+                
+                self.status_var.set("10张图片加载成功！")
+            else:
+                self.status_var.set("获取图片失败")
+                messagebox.showerror("错误", "获取随机图片失败，请稍后重试")
+        except Exception as e:
+            self.status_var.set("获取图片失败")
+            messagebox.showerror("错误", f"获取图片过程中出现错误: {str(e)}")
+        finally:
+            self.status_var.set("就绪")
+            self.download_button.config(state=tk.NORMAL)
+    
+    def download_image(self, image_data, index):
+        """下载指定的图片"""
+        try:
+            self.status_var.set("正在下载图片...")
+            
+            # 创建图片下载目录
+            image_dir = os.path.join(DOWNLOAD_DIR, "图片")
+            os.makedirs(image_dir, exist_ok=True)
+            
+            # 生成文件名
+            import time
+            timestamp = int(time.time())
+            filename = f"image_{timestamp}_{index+1}.jpg"
+            filepath = os.path.join(image_dir, filename)
+            
+            # 保存图片
+            with open(filepath, "wb") as f:
+                f.write(image_data)
+            
+            self.status_var.set("图片下载成功！")
+            messagebox.showinfo("成功", f"图片已下载到: {filepath}")
+        except Exception as e:
+            self.status_var.set("下载失败")
+            messagebox.showerror("错误", f"下载图片过程中出现错误: {str(e)}")
+        finally:
+            self.status_var.set("就绪")
+    
+    def create_image_viewer(self):
+        """创建图片查看界面"""
+        # 隐藏其他框架
+        self.type_frame.pack_forget()
+        self.input_frame.pack_forget()
+        self.search_frame.pack_forget()
+        self.result_frame.pack_forget()
+        
+        # 创建图片查看框架
+        self.image_frame = ttk.LabelFrame(self.main_frame, text="图片查看", padding="15")
+        self.image_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        # 创建图片显示区域（带滚动条）
+        self.image_display_frame = ttk.Frame(self.image_frame)
+        self.image_display_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 创建画布和滚动条
+        self.canvas = tk.Canvas(self.image_display_frame)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # 添加垂直滚动条
+        vscrollbar = ttk.Scrollbar(self.image_display_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        vscrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.config(yscrollcommand=vscrollbar.set)
+        
+        # 添加水平滚动条
+        hscrollbar = ttk.Scrollbar(self.image_display_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        hscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.canvas.config(xscrollcommand=hscrollbar.set)
+        
+        # 创建内部框架用于放置图片
+        self.canvas_frame = ttk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.canvas_frame, anchor=tk.NW)
+        
+        # 重置下载按钮文本
+        self.download_button.config(text="获取10张随机图片")
+    
+    def resize_image(self):
+        """调整图片大小以适应窗口"""
+        if hasattr(self, 'current_image') and self.current_image:
+            try:
+                # 获取显示区域的尺寸
+                display_width = self.image_display_frame.winfo_width()
+                display_height = self.image_display_frame.winfo_height()
+                
+                if display_width > 0 and display_height > 0:
+                    # 调整图片大小
+                    resized_image = self.current_image.resize(
+                        (display_width, display_height), 
+                        Image.LANCZOS
+                    )
+                    photo = ImageTk.PhotoImage(resized_image)
+                    
+                    # 更新图片显示
+                    self.image_label.config(image=photo)
+                    self.image_label.image = photo
+            except Exception as e:
+                print(f"调整图片大小失败: {str(e)}")
+    
     def on_resize(self, event):
         """处理窗口大小变化事件"""
         # 获取新的窗口宽度
@@ -534,6 +724,8 @@ class ModernDownloaderGUI:
                 self.result_tree.column("name", width=name_width)
                 self.result_tree.column("artist", width=artist_width)
                 self.result_tree.column("album", width=album_width)
+        
+
 
 if __name__ == "__main__":
     root = tk.Tk()
